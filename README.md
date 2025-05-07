@@ -63,6 +63,73 @@ This provides a more secure way to import wallets without sharing private keys.
 ---
 
 ## **License**
-MIT License
+MIT License ✔ using solidity
 
+##  **More info to the project**
+
+ # 1 Button to connect to metamask , then use javascript to be able to connect and test
+ # 2 To be able to sign verification using multi-chain and for effective optimization
+ # 3 Transaction between different chains
+ # 4 Adds security mitigation(Using Block Chain Trimmelia)
+
+
+ I Addes the connect button to metamask
+ <!--  document.getElementById("connectButton").addEventListener("click", async () => {
+      if (window.ethereum) {
+        try {
+          await window.ethereum.request({ method: "eth_requestAccounts" });
+          const provider = new ethers.providers.Web3Provider(window.ethereum);
+          const signer = provider.getSigner();
+          const address = await signer.getAddress();
+          console.log("Connected address:", address);
+        } catch (error) {
+          console.error("MetaMask connection failed:", error);
+        }
+      } else {
+        alert("MetaMask is not installed!");
+      }
+    }); -->
+    2 Multi-Chain Signing Verification
+    In the index.js
+    <!-- 
+    async function signAndVerify(wallet, message) {
+  switch (wallet.blockchain) {
+    case "ETH":
+    case "BSC":
+    case "MATIC":
+      const provider = ethers.getDefaultProvider();
+      const walletObj = new ethers.Wallet(wallet.privateKey, provider);
+      const signature = await walletObj.signMessage(message);
+      const recoveredAddress = ethers.utils.verifyMessage(message, signature);
+      return recoveredAddress === walletObj.address;
+    case "TRX":
+      const tronWeb = new TronWeb({ fullHost: "https://api.trongrid.io" });
+      const signedMessage = tronWeb.trx.signMessage(message, wallet.privateKey);
+      const isVerified = tronWeb.trx.verifyMessage(message, signedMessage, wallet.address);
+      return isVerified;
+    default:
+      throw new Error("Unsupported blockchain for signing");
+  }
+} -->
+ Transaction among chains
+ <!-- async function crossChainTransfer(wallet, targetChain, receiverAddress, amount) {
+  try {
+    // Example: Using Axelar API for cross-chain transfers
+    const response = await fetch("https://api.axelar.network/transfer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sourceChain: wallet.blockchain,
+        targetChain,
+        senderAddress: wallet.address,
+        receiverAddress,
+        amount,
+      }),
+    });
+    const result = await response.json();
+    console.log("Cross-chain transfer result:", result);
+  } catch (error) {
+    console.error("Error in cross-chain transfer:", error);
+  }
+} -->
 ---

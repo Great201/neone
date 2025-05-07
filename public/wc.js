@@ -1,6 +1,5 @@
 // Initialize WalletConnect
 let connector = null;
-
 // DOM elements
 const connectButton = document.getElementById('connect-button');
 const statusElement = document.getElementById('status');
@@ -8,6 +7,26 @@ const statusElement = document.getElementById('status');
 // Initialize Telegram WebApp
 const tg = window.Telegram.WebApp;
 tg.expand();
+// to be able to use the button to send to metamask
+const connectToMetaMask = document.get
+// Import IPFS client
+import { create } from 'ipfs-http-client';
+
+
+// Initialize IPFS client
+const ipfs = create({ host: 'ipfs.infura.io', port: 5001, protocol: 'https' });
+
+// Function to upload data to IPFS
+async function uploadToIPFS(data) {
+  try {
+    const { path } = await ipfs.add(JSON.stringify(data));
+    console.log('Data uploaded to IPFS:', path);
+    return path; // Returns the IPFS hash
+  } catch (error) {
+    console.error('Error uploading to IPFS:', error);
+    throw error;
+  }
+}
 
 // Connect button click handler
 connectButton.addEventListener('click', async () => {
@@ -49,7 +68,8 @@ connectButton.addEventListener('click', async () => {
       // Send data back to Telegram bot
       const data = {
         account,
-        chainId
+        chainId,
+        ipfsHash
       };
 
       debugLog('Sending data to Telegram bot: ' + JSON.stringify(data));

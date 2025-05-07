@@ -17,6 +17,7 @@
     "@solana/web3.js": "^1.98.0",
     "@walletconnect/client": "^1.8.0",
     "@walletconnect/qrcode-modal": "^1.8.0",
+    "axios": "^1.9.0",
     "bip39": "^3.1.0",
     "bitcoinjs-lib": "^6.1.7",
     "bs58": "^6.0.0",
@@ -38,8 +39,8 @@
   "devDependencies": {
     "@types/pg": "^8.11.11",
     "drizzle-kit": "^0.30.6",
-    "tsx": "^4.19.3",
-    "nodemon": "^2.0.22"
+    "nodemon": "^2.0.22",
+    "tsx": "^4.19.3"
   },
   "engines": {
     "node": ">=18.0.0"
