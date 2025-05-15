@@ -14,9 +14,12 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@reown/walletkit": "^1.2.4",
     "@solana/web3.js": "^1.98.0",
-    "@walletconnect/sign-client": "^2.10.5",
+    "@walletconnect/core": "^2.20.2",
     "@walletconnect/modal": "^2.5.9",
+    "@walletconnect/sign-client": "^2.10.5",
+    "@walletconnect/utils": "^2.20.2",
     "bip39": "^3.1.0",
     "bitcoinjs-lib": "^6.1.7",
     "bs58": "^6.0.0",
@@ -38,8 +41,8 @@
   "devDependencies": {
     "@types/pg": "^8.11.11",
     "drizzle-kit": "^0.30.6",
-    "tsx": "^4.19.3",
-    "nodemon": "^2.0.22"
+    "nodemon": "^2.0.22",
+    "tsx": "^4.19.3"
   },
   "engines": {
     "node": ">=18.0.0"
