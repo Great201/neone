@@ -30,7 +30,7 @@ async function initWalletConnect() {
 
     // Initialize Web3Modal
     web3Modal = new Web3Modal({
-      projectId: 'YOUR_PROJECT_ID', // Same project ID as above
+      projectId: '3bf85969ef80e641764cbd59fd1a37da', // Same project ID as above
       chains: ['tron'],
       themeMode: 'dark',
       themeVariables: {
