@@ -1,106 +1,165 @@
 // Initialize WalletConnect
-let connector = null;
+let signClient;
+let web3Modal;
 
 // DOM elements
 const connectButton = document.getElementById('connect-button');
 const statusElement = document.getElementById('status');
+const errorElement = document.getElementById('error');
 
 // Initialize Telegram WebApp
 const tg = window.Telegram.WebApp;
 tg.expand();
 
+async function initWalletConnect() {
+  try {
+    debugLog('Initializing WalletConnect v2...');
+    
+    // Initialize SignClient
+    signClient = await SignClient.init({
+      projectId: '3bf85969ef80e641764cbd59fd1a37da', 
+      metadata: {
+        name: 'TRON Automated Transaction Bot',
+        description: 'Bot for automating TRON transactions',
+        url: window.location.host,
+        icons: ['https://your-icon-url.png']
+      }
+    });
+
+    debugLog('SignClient initialized successfully');
+
+    // Initialize Web3Modal
+    web3Modal = new Web3Modal({
+      projectId: 'YOUR_PROJECT_ID', // Same project ID as above
+      chains: ['tron'],
+      themeMode: 'dark',
+      themeVariables: {
+        '--w3m-z-index': '9999'
+      }
+    });
+
+    debugLog('Web3Modal initialized successfully');
+
+    // Set up event listeners
+    signClient.on('session_event', ({ event }) => {
+      debugLog('Session event:', event);
+    });
+
+    signClient.on('session_update', ({ topic, params }) => {
+      debugLog('Session updated:', { topic, params });
+    });
+
+    signClient.on('session_delete', () => {
+      debugLog('Session deleted');
+      updateUI('disconnected');
+    });
+
+    return true;
+  } catch (error) {
+    debugLog('Error initializing WalletConnect:', error);
+    return false;
+  }
+}
+
+async function connectWallet() {
+  try {
+    debugLog('Attempting to connect wallet...');
+    
+    if (!signClient) {
+      const initialized = await initWalletConnect();
+      if (!initialized) {
+        throw new Error('Failed to initialize WalletConnect');
+      }
+    }
+
+    // Open Web3Modal
+    const { uri, approval } = await signClient.connect({
+      requiredNamespaces: {
+        tron: {
+          methods: ['tron_signTransaction', 'tron_signMessage'],
+          chains: ['tron:mainnet'],
+          events: ['chainChanged', 'accountsChanged']
+        }
+      }
+    });
+
+    if (uri) {
+      web3Modal.openModal({ uri });
+    }
+
+    const session = await approval();
+    debugLog('Wallet connected successfully:', session);
+
+    // Update UI and send data back to Telegram bot
+    updateUI('connected');
+    const accounts = session.namespaces.tron.accounts;
+    const address = accounts[0].split(':')[2];
+    
+    window.Telegram.WebApp.sendData(JSON.stringify({
+      type: 'wallet_connected',
+      address: address
+    }));
+
+    return session;
+  } catch (error) {
+    debugLog('Error connecting wallet:', error);
+    updateUI('error', error.message);
+    throw error;
+  }
+}
+
+function updateUI(status, error = null) {
+  switch (status) {
+    case 'connected':
+      statusElement.textContent = 'Connected';
+      statusElement.className = 'status connected';
+      errorElement.style.display = 'none';
+      break;
+    case 'disconnected':
+      statusElement.textContent = 'Disconnected';
+      statusElement.className = 'status disconnected';
+      errorElement.style.display = 'none';
+      break;
+    case 'error':
+      statusElement.textContent = 'Error';
+      statusElement.className = 'status error';
+      errorElement.textContent = error;
+      errorElement.style.display = 'block';
+      break;
+  }
+}
+
+function debugLog(...args) {
+  const debugElement = document.getElementById('debug');
+  const timestamp = new Date().toISOString();
+  const message = args.map(arg => 
+    typeof arg === 'object' ? JSON.stringify(arg, null, 2) : arg
+  ).join(' ');
+  
+  debugElement.innerHTML += `<div>[${timestamp}] ${message}</div>`;
+  console.log('[WalletConnect Debug]', ...args);
+}
+
 // Connect button click handler
 connectButton.addEventListener('click', async () => {
   try {
-    debugLog('Connecting to wallet...');
-    
-    // Create a new connector
-    connector = new WalletConnect.default({
-      bridge: 'https://bridge.walletconnect.org',
-      qrcodeModal: WalletConnectQRCodeModal.default
-    });
-
-    debugLog('WalletConnect connector created');
-
-    // Subscribe to connection events
-    connector.on('connect', (error, payload) => {
-      if (error) {
-        debugLog(`Connection error: ${error.message}`);
-        statusElement.textContent = `Error: ${error.message}`;
-        statusElement.classList.add('error');
-        return;
-      }
-
-      debugLog('Wallet connected successfully');
-      
-      // Get connected accounts and chain ID
-      const { accounts, chainId } = payload.params[0];
-      const account = accounts[0];
-
-      debugLog(`Account: ${account}, Chain ID: ${chainId}`);
-
-      // Update UI
-      statusElement.textContent = `Connected: ${account}`;
-      statusElement.classList.add('connected');
-      statusElement.classList.remove('error');
-      connectButton.textContent = 'Connected';
-      connectButton.disabled = true;
-
-      // Send data back to Telegram bot
-      const data = {
-        account,
-        chainId
-      };
-
-      debugLog('Sending data to Telegram bot: ' + JSON.stringify(data));
-      
-      // Send data to Telegram bot
-      tg.sendData(JSON.stringify(data));
-      
-      // Close the web app after a short delay to ensure data is sent
-      setTimeout(() => {
-        debugLog('Closing Telegram WebApp');
-        tg.close();
-      }, 1000);
-    });
-
-    connector.on('disconnect', (error, payload) => {
-      if (error) {
-        debugLog(`Disconnect error: ${error.message}`);
-      } else {
-        debugLog('Wallet disconnected');
-      }
-      
-      // Reset UI
-      statusElement.textContent = 'Disconnected';
-      statusElement.classList.remove('connected');
-      statusElement.classList.remove('error');
-      connectButton.textContent = 'Connect Wallet';
-      connectButton.disabled = false;
-    });
-
-    connector.on('error', (error) => {
-      debugLog(`WalletConnect error: ${error.message}`);
-      statusElement.textContent = `Error: ${error.message}`;
-      statusElement.classList.add('error');
-    });
-
-    // Create a new session
-    if (!connector.connected) {
-      debugLog('Creating new WalletConnect session');
-      await connector.createSession();
-    }
+    await connectWallet();
   } catch (error) {
-    debugLog(`Error connecting to wallet: ${error.message}`);
-    statusElement.textContent = `Error: ${error.message}`;
-    statusElement.classList.add('error');
+    debugLog('Connection error:', error);
+    updateUI('error', error.message);
   }
 });
 
-// Handle page unload
-window.addEventListener('beforeunload', () => {
-  if (connector && connector.connected) {
-    debugLog('Killing WalletConnect session');
-    connector.killSession();
+// Initialize on page load
+window.addEventListener('load', async () => {
+  debugLog('Page loaded, initializing WalletConnect...');
+  await initWalletConnect();
+});
+
+// Clean up on page unload
+window.addEventListener('beforeunload', async () => {
+  if (signClient) {
+    debugLog('Cleaning up WalletConnect session...');
+    await signClient.disconnect();
   }
 }); 
