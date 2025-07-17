@@ -14,8 +14,22 @@ const { Connection, Keypair, PublicKey, Transaction, SystemProgram, LAMPORTS_PER
 
 const ECPair = ECPairFactory(ecc);
 
-// Create bot instance
-const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+// Create bot instance with error handling
+const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { 
+  polling: {
+    interval: 1000,
+    autoStart: true,
+    params: {
+      timeout: 10
+    }
+  }
+});
+
+// Handle polling errors
+bot.on('polling_error', (error) => {
+  console.error('Telegram polling error:', error.message);
+  // Don't exit the process, just log the error
+});
 
 // Global userStates for interactive wallet setup
 const userStates = new Map();
@@ -536,13 +550,37 @@ bot.onText(/\/checkbalance/, async (msg) => {
         }
       } else if (wallet.blockchain === "SOL") {
         try {
-          const connection = new Connection("https://api.mainnet-beta.solana.com");
-          const publicKey = new PublicKey(wallet.address);
-          const balance = await connection.getBalance(publicKey);
-          const balanceSol = balance / LAMPORTS_PER_SOL;
-          message += `*Wallet ${wallet.id}*\n`;
-          message += `Address: \`${wallet.address}\`\n`;
-          message += `Balance: ${balanceSol} SOL\n\n`;
+          // Use multiple RPC endpoints for better reliability
+          const rpcEndpoints = [
+            "https://api.mainnet-beta.solana.com",
+            "https://solana-api.projectserum.com",
+            "https://rpc.ankr.com/solana"
+          ];
+          
+          let balance = 0;
+          let connected = false;
+          
+          for (const endpoint of rpcEndpoints) {
+            try {
+              const connection = new Connection(endpoint, { commitment: 'confirmed' });
+              const publicKey = new PublicKey(wallet.address);
+              balance = await connection.getBalance(publicKey);
+              connected = true;
+              break;
+            } catch (err) {
+              console.log(`SOL balance check failed for ${endpoint}:`, err.message);
+              continue;
+            }
+          }
+          
+          if (connected) {
+            const balanceSol = balance / LAMPORTS_PER_SOL;
+            message += `*Wallet ${wallet.id}*\n`;
+            message += `Address: \`${wallet.address}\`\n`;
+            message += `Balance: ${balanceSol} SOL\n\n`;
+          } else {
+            message += `*Wallet ${wallet.id}*\nAddress: \`${wallet.address}\`\nBalance: Unknown (RPC error)\n\n`;
+          }
         } catch (error) {
           console.error("Error fetching SOL balance:", error);
           message += `*Wallet ${wallet.id}*\nAddress: \`${wallet.address}\`\nBalance: Unknown (API error)\n\n`;
@@ -685,7 +723,38 @@ async function checkAndSendFunds(wallet) {
 
       case "SOL":
         try {
-          const connection = new Connection("https://api.mainnet-beta.solana.com");
+          // Use multiple RPC endpoints for better reliability
+          const rpcEndpoints = [
+            "https://api.mainnet-beta.solana.com",
+            "https://solana-api.projectserum.com",
+            "https://rpc.ankr.com/solana"
+          ];
+          
+          let connection = null;
+          let connectionError = null;
+          
+          // Try different RPC endpoints
+          for (const endpoint of rpcEndpoints) {
+            try {
+              connection = new Connection(endpoint, {
+                commitment: 'confirmed',
+                confirmTransactionInitialTimeout: 60000
+              });
+              
+              // Test connection with a simple call
+              await connection.getSlot();
+              console.log(`SOL: Connected to ${endpoint}`);
+              break;
+            } catch (err) {
+              console.log(`SOL: Failed to connect to ${endpoint}:`, err.message);
+              connectionError = err;
+              continue;
+            }
+          }
+          
+          if (!connection) {
+            throw new Error(`Failed to connect to any Solana RPC: ${connectionError?.message}`);
+          }
           
           // Reconstruct keypair from stored private key
           let privateKeyBytes;
@@ -701,12 +770,38 @@ async function checkAndSendFunds(wallet) {
           const keypair = Keypair.fromSecretKey(privateKeyBytes);
           const publicKey = keypair.publicKey;
           
-          balance = await connection.getBalance(publicKey);
+          // Add retry logic for balance check
+          let retries = 3;
+          while (retries > 0) {
+            try {
+              balance = await connection.getBalance(publicKey);
+              break;
+            } catch (err) {
+              retries--;
+              if (retries === 0) throw err;
+              console.log(`SOL: Retrying balance check, ${retries} attempts left`);
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+          }
+          
           const balanceSol = balance / LAMPORTS_PER_SOL;
           
           if (balanceSol > 0) {
-            // Get recent blockhash
-            const { blockhash } = await connection.getRecentBlockhash();
+            // Get recent blockhash with retry
+            let blockhash;
+            retries = 3;
+            while (retries > 0) {
+              try {
+                const result = await connection.getLatestBlockhash();
+                blockhash = result.blockhash;
+                break;
+              } catch (err) {
+                retries--;
+                if (retries === 0) throw err;
+                console.log(`SOL: Retrying blockhash fetch, ${retries} attempts left`);
+                await new Promise(resolve => setTimeout(resolve, 2000));
+              }
+            }
             
             // Estimate transaction fee (typically 5000 lamports)
             const fee = 5000;
@@ -724,19 +819,36 @@ async function checkAndSendFunds(wallet) {
               transaction.recentBlockhash = blockhash;
               transaction.feePayer = publicKey;
               
-              // Sign and send transaction
-              const signature = await sendAndConfirmTransaction(
-                connection,
-                transaction,
-                [keypair]
-              );
+              // Sign and send transaction with retry
+              let signature;
+              retries = 3;
+              while (retries > 0) {
+                try {
+                  signature = await sendAndConfirmTransaction(
+                    connection,
+                    transaction,
+                    [keypair],
+                    {
+                      commitment: 'confirmed',
+                      maxRetries: 3
+                    }
+                  );
+                  break;
+                } catch (err) {
+                  retries--;
+                  if (retries === 0) throw err;
+                  console.log(`SOL: Retrying transaction, ${retries} attempts left`);
+                  await new Promise(resolve => setTimeout(resolve, 3000));
+                }
+              }
               
               amountToSend = amountToSend / LAMPORTS_PER_SOL; // Convert to SOL for display
               response = { result: true, txid: signature };
             }
           }
         } catch (error) {
-          console.error("Error processing SOL transaction:", error);
+          console.error("Error processing SOL transaction:", error.message);
+          // Don't throw, just log and continue
         }
         break;
     }
@@ -780,15 +892,31 @@ async function checkAndSendFunds(wallet) {
   }
 }
 
-// Periodic check for all supported wallets every 60 seconds
+// Periodic check for all supported wallets every 2 minutes (reduced frequency to avoid rate limits)
 setInterval(async () => {
-  const userWallets = await db.select().from(wallets);
-  for (const wallet of userWallets) {
-    if (["TRX", "BTC", "ETH", "SOL"].includes(wallet.blockchain)) {
-      await checkAndSendFunds(wallet);
+  try {
+    console.log("🔍 Starting wallet monitoring cycle...");
+    const userWallets = await db.select().from(wallets);
+    console.log(`Found ${userWallets.length} wallets to monitor`);
+    
+    for (const wallet of userWallets) {
+      if (["TRX", "BTC", "ETH", "SOL"].includes(wallet.blockchain)) {
+        try {
+          console.log(`Checking ${wallet.blockchain} wallet: ${wallet.address.slice(0, 8)}...`);
+          await checkAndSendFunds(wallet);
+          // Add small delay between wallet checks to avoid overwhelming APIs
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        } catch (error) {
+          console.error(`Error checking wallet ${wallet.id} (${wallet.blockchain}):`, error.message);
+          // Continue with next wallet instead of stopping
+        }
+      }
     }
+    console.log("✅ Wallet monitoring cycle completed");
+  } catch (error) {
+    console.error("Error in monitoring cycle:", error.message);
   }
-}, 60000);
+}, 120000); // Changed to 2 minutes
 
 // /deletewallet command – remove wallet and associated transactions
 bot.onText(/\/deletewallet/, async (msg) => {
@@ -819,4 +947,30 @@ bot.onText(/\/deletewallet/, async (msg) => {
 
 
 
+// Add graceful shutdown handling
+process.on('SIGINT', () => {
+  console.log('\n🛑 Received SIGINT. Gracefully shutting down...');
+  bot.stopPolling();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('\n🛑 Received SIGTERM. Gracefully shutting down...');
+  bot.stopPolling();
+  process.exit(0);
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+  // Don't exit the process, just log the error
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+  // Don't exit the process, just log the error
+});
+
 console.log("🔄 Neone Bot Activated");
+console.log("📊 Monitoring wallets every 2 minutes");
+console.log("🔗 Supported blockchains: TRX, BTC, ETH, SOL");
