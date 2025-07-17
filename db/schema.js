@@ -1,7 +1,7 @@
-import { pgTable, serial, text, numeric, timestamp, integer } from "drizzle-orm/pg-core";
+const { pgTable, serial, text, numeric, timestamp, integer } = require("drizzle-orm/pg-core");
 
 // Users Table
-export const users = pgTable("users", {
+const users = pgTable("users", {
   id: serial("id").primaryKey(),
   telegramUserId: text("telegram_user_id").unique().default(null), // Store Telegram ID
   telegramUsername: text("telegram_username").default(null),
@@ -9,7 +9,7 @@ export const users = pgTable("users", {
 });
 
 // Wallets Table
-export const wallets = pgTable("wallets", {
+const wallets = pgTable("wallets", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").references(() => users.id),
   blockchain: text("blockchain").notNull(), // BTC, ETH, SOL, TRX
@@ -21,7 +21,7 @@ export const wallets = pgTable("wallets", {
 });
 
 // Transactions Table
-export const transactions = pgTable("transactions", {
+const transactions = pgTable("transactions", {
   id: serial("id").primaryKey(),
   walletId: integer("wallet_id").references(() => wallets.id),
   blockchain: text("blockchain").notNull(),
@@ -30,3 +30,5 @@ export const transactions = pgTable("transactions", {
   txHash: text("tx_hash"),
   createdAt: timestamp("created_at").defaultNow(),
 });
+
+module.exports = { users, wallets, transactions };
