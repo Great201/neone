@@ -11,7 +11,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@solana/spl-token": "^0.4.13",
+    "@solana/spl-token": "^0.1.8",
     "@solana/web3.js": "^1.98.2",
     "bip39": "^3.1.0",
     "bitcoinjs-lib": "^6.1.7",
@@ -21,7 +21,7 @@
     "ecpair": "^3.0.0",
     "ethers": "^6.15.0",
     "hdkey": "^2.1.0",
-    "node-telegram-bot-api": "^0.66.0",
+    "node-telegram-bot-api": "^0.63.0",
     "pg": "^8.14.1",
     "telegraf": "^4.16.3",
     "tiny-secp256k1": "^2.2.3",
@@ -31,7 +31,7 @@
   },
   "devDependencies": {
     "@types/pg": "^8.11.11",
-    "drizzle-kit": "^0.30.6",
+    "drizzle-kit": "^0.31.4",
     "tsx": "^4.19.3"
   }
 }
